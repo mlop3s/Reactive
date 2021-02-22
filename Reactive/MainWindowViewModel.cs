@@ -19,13 +19,21 @@ namespace Reactive
         private readonly OracleConnection _connection;
 
         private string _searchString;
-        private IDisposable _searchSubscription;
+
+        private readonly IDisposable _searchSubscription;
         public string SearchString
         {
             get => _searchString;
-            set => Set(ref _searchString, value);
+            set
+            {
+                if (Set(ref _searchString, value))
+                {
+                    StringObservable.StringChanged(value);
+                }
+            }
         }
 
+        private StringObservable StringObservable { get; }
 
         public List<Drug> Results { get; private set; } = new List<Drug>();
 
@@ -38,14 +46,11 @@ namespace Reactive
         {
             _connection = new OracleConnection("DATA SOURCE=MF.MDB01;PERSIST SECURITY INFO=True;");
             DrugSearch = new DrugSearch(_connection);
-            var searchTextObservable = Observable
-                            .FromEventPattern<PropertyChangedEventHandler, PropertyChangedEventArgs>(
-                                h => this.PropertyChanged += h,
-                                h => this.PropertyChanged -= h)
-                .Where(x => string.CompareOrdinal(x.EventArgs.PropertyName, nameof(SearchString)) == 0)
-                .Select(_ => SearchString)
+            StringObservable = new StringObservable();
+
+            var searchTextObservable = StringObservable
                 .Where(text => text.Length > 2 || text.Length == 0)
-                .Throttle(TimeSpan.FromMilliseconds(500))
+                .Throttle(TimeSpan.FromMilliseconds(300))
                 .DistinctUntilChanged()
                 .PairWithPrevious()
                 .Where(pair => !AlreadyEmptySearch(pair.previous, pair.current, Results))

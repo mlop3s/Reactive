@@ -63,6 +63,7 @@
     <Compile Include="Services\Drug.cs" />
     <Compile Include="Services\DrugSearch.cs" />
     <Compile Include="Services\IDrugSearch.cs" />
+    <Compile Include="StringObservable.cs" />
     <Page Include="MainWindow.xaml">
       <Generator>MSBuild:Compile</Generator>
       <SubType>Designer</SubType>
