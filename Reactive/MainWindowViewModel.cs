@@ -1,14 +1,15 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-using GalaSoft.MvvmLight;
-using Reactive.Services;
-using System.Collections.ObjectModel;
+﻿using GalaSoft.MvvmLight;
 using Oracle.ManagedDataAccess.Client;
-using GalaSoft.MvvmLight.Command;
+using Reactive.Services;
+using System;
+using System.Collections.Generic;
+using System.Collections.ObjectModel;
+using System.ComponentModel;
+using System.Diagnostics;
+using System.Linq;
+using System.Reactive.Linq;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace Reactive
 {
@@ -16,9 +17,10 @@ namespace Reactive
     {
         private bool _disposedValue;
         private readonly OracleConnection _connection;
-        private bool _isSearching;
 
         private string _searchString;
+
+        private readonly IDisposable _searchSubscription;
         public string SearchString
         {
             get => _searchString;
@@ -26,17 +28,16 @@ namespace Reactive
             {
                 if (Set(ref _searchString, value))
                 {
-                    Search.RaiseCanExecuteChanged();
+                    StringObservable.StringChanged(value);
                 }
             }
         }
 
+        private StringObservable StringObservable { get; }
 
         public List<Drug> Results { get; private set; } = new List<Drug>();
 
         public ObservableCollection<Drug> Drugs { get; } = new ObservableCollection<Drug>();
-
-        public RelayCommand Search { get; set; }
 
         public IDrugSearch DrugSearch { get; }
 
@@ -44,11 +45,28 @@ namespace Reactive
         public MainWindowViewModel()
         {
             _connection = new OracleConnection("DATA SOURCE=MF.MDB01;PERSIST SECURITY INFO=True;");
-            Search = new RelayCommand(DoSearch, CanDoSearch);
             DrugSearch = new DrugSearch(_connection);
-        }
+            StringObservable = new StringObservable();
 
-        private bool CanDoSearch() => !string.IsNullOrEmpty(SearchString) && !_isSearching;
+            var searchTextObservable = StringObservable
+                .Where(text => text.Length > 2 || text.Length == 0)
+                .Throttle(TimeSpan.FromMilliseconds(300))
+                .DistinctUntilChanged()
+                .PairWithPrevious()
+                .Where(pair => !AlreadyEmptySearch(pair.previous, pair.current, Results))
+                .Select(pair => DoSearchAsync(pair.previous, pair.current))
+                .Merge()
+                .ObserveOnDispatcher();
+
+            _searchSubscription = searchTextObservable.Subscribe(list =>
+            {
+                Drugs.Clear();
+                foreach (var drug in list)
+                {
+                    Drugs.Add(drug);
+                }
+            });
+        }
 
         private void Dispose(bool disposing)
         {
@@ -66,41 +84,34 @@ namespace Reactive
             GC.SuppressFinalize(this);
         }
 
-        private void DoSearch()
+        private static bool AlreadyEmptySearch(string previous, string current, IEnumerable<Drug> list) =>
+                previous != null && current.StartsWith(previous, StringComparison.OrdinalIgnoreCase) && !list.Any();
+
+        private async Task<IEnumerable<Drug>> DoSearchAsync(string previous, string current)
         {
-            DoSearchAsync()
-                .ContinueWith(
-                    x =>
-                    {
-                        Console.WriteLine(x.Exception);
-                    },
-                    TaskContinuationOptions.OnlyOnFaulted);
-        }
-
-        private async Task DoSearchAsync()
-        {
-            Drugs.Clear();
-            _isSearching = true;
-
-            try
+            if (string.IsNullOrEmpty(current))
             {
-                if (_connection.State != System.Data.ConnectionState.Open)
-                {
-                    _connection.Open();
-                }
+                Debug.WriteLine("## Clear");
+                return Enumerable.Empty<Drug>();
+            }
 
-                var result = await DrugSearch.SearchDrug(SearchString, CancellationToken.None).ConfigureAwait(true);
-                Results = result.ToList();
-                foreach (var drug in Results)
-                {
-                    Drugs.Add(drug);
-                }
-            }
-            finally
+            if (previous != null && current.StartsWith(previous, StringComparison.OrdinalIgnoreCase))
             {
-                _isSearching = false;
-                Search.RaiseCanExecuteChanged();
+                Debug.WriteLine("+++ Reusing...");
+                Results = Results.Where(s => s.Name.StartsWith(current, StringComparison.OrdinalIgnoreCase)).ToList();
+                return Results;
             }
+
+            if (_connection.State != System.Data.ConnectionState.Open)
+            {
+                _connection.Open();
+            }
+
+            Debug.WriteLine("*** Searching...");
+            var results = await DrugSearch.SearchDrug(current, CancellationToken.None).ConfigureAwait(true);
+            Results = results.ToList();
+
+            return Results;
         }
     }
 }
